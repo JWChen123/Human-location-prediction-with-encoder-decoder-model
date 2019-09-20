@@ -3,12 +3,9 @@ from __future__ import print_function
 from __future__ import division
 
 import torch
-import math
-import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
-from torch.nn.parameter import Parameter
 
 
 # ##############seq2seq_attention model#############
@@ -66,19 +63,16 @@ class EncoderModel(nn.Module):
 
         self.emb_loc = nn.Embedding(self.loc_size, self.loc_emb_size)
 
-        # input_size = self.loc_emb_size + self.tim_emb_size
         input_size = self.loc_emb_size
 
         if self.rnn_type == 'GRU':
             self.rnn_encoder = nn.GRU(input_size, self.hidden_size, 1)
         elif self.rnn_type == 'LSTM':
-            # self.rnn_encoder = nn.LSTM(input_size, self.hidden_size, 1)
             self.rnn_encoder = nn.LSTM(
                 input_size, self.hidden_size, 1, bidirectional=True)
 
         elif self.rnn_type == 'RNN':
             self.rnn_encoder = nn.RNN(input_size, self.hidden_size, 1)
-            # self.rnn_decoder = nn.LSTM(input_size, self.hidden_size, 1)
 
         self.dropout = nn.Dropout(p=parameters.dropout_p)
         self.init_weights()
@@ -115,16 +109,13 @@ class EncoderModel(nn.Module):
         if self.rnn_type == 'GRU' or self.rnn_type == 'RNN':
             hidden_history, h1 = self.rnn_encoder(x[:-target_len + 1], h1)
             return hidden_history, h1
-            # hidden_state, h2 = self.rnn_decoder(x[-target_len:], h1)
         elif self.rnn_type == 'LSTM':
             hidden_history, (h1, c1) = self.rnn_encoder(
                 x[:-target_len + 1], (h1, c1))
             return hidden_history, (h1, c1)
-            # use h1,c1 as decoder init_hidden_state
-            # hidden_state, (h2, c2) = self.rnn_decoder(x[-target_len:],
-            #                                           (h1, c1))
 
 
+# ##############batched_encoder#############
 class EncoderModel_batch(nn.Module):
     def __init__(self, parameters):
         super(EncoderModel_batch, self).__init__()
@@ -142,13 +133,10 @@ class EncoderModel_batch(nn.Module):
         if self.rnn_type == 'GRU':
             self.rnn_encoder = nn.GRU(input_size, self.hidden_size, 1)
         elif self.rnn_type == 'LSTM':
-            # self.rnn_encoder = nn.LSTM(input_size, self.hidden_size, 1)
             self.rnn_encoder = nn.LSTM(
                 input_size, self.hidden_size, 1, bidirectional=True)
-
         elif self.rnn_type == 'RNN':
             self.rnn_encoder = nn.RNN(input_size, self.hidden_size, 1)
-            # self.rnn_decoder = nn.LSTM(input_size, self.hidden_size, 1)
 
         self.dropout = nn.Dropout(p=parameters.dropout_p)
         self.init_weights()
@@ -182,19 +170,20 @@ class EncoderModel_batch(nn.Module):
         if self.rnn_type == 'GRU' or self.rnn_type == 'RNN':
             packed_history, h1 = self.rnn_encoder(packed, h1)
             history, _ = pad_packed_sequence(packed_history)
-            hidden_history = history[:, :, :self.
-                                     hidden_size] + history[:, :, self.
-                                                            hidden_size:]
+            hidden_history = history[:, :, :
+                                     self.hidden_size] + history[:, :, self.
+                                                                 hidden_size:]
             return hidden_history, h1
         elif self.rnn_type == 'LSTM':
             packed_history, (h1, c1) = self.rnn_encoder(packed, (h1, c1))
             history, _ = pad_packed_sequence(packed_history)
-            hidden_history = history[:, :, :self.
-                                     hidden_size] + history[:, :, self.
-                                                            hidden_size:]
+            hidden_history = history[:, :, :
+                                     self.hidden_size] + history[:, :, self.
+                                                                 hidden_size:]
             return hidden_history, (h1, c1)
 
 
+# ##############batched_decoder#############
 class DecoderModel_batch(nn.Module):
     def __init__(self, parameters):
         super(DecoderModel_batch, self).__init__()
