@@ -1,0 +1,421 @@
+from __future__ import print_function
+from __future__ import division
+
+import time
+import argparse
+import numpy as np
+import pickle
+from collections import Counter
+from math import radians, cos, sin, asin, sqrt
+
+
+def entropy_spatial(sessions):
+    locations = {}
+    days = sorted(sessions.keys())
+    for d in days:
+        session = sessions[d]
+        for s in session:
+            if s[0] not in locations:
+                locations[s[0]] = 1
+            else:
+                locations[s[0]] += 1
+    frequency = np.array([locations[loc] for loc in locations])
+    frequency = frequency / np.sum(frequency)
+    entropy = -1 * np.sum(frequency * np.log(frequency))  # origin - np.sum...
+    return entropy
+
+
+class DataFoursquare(object):
+    def __init__(self,
+                 trace_min=10,
+                 global_visit=10,
+                 hour_gap=72,
+                 min_gap=10,
+                 session_min=2,
+                 session_max=10,
+                 sessions_min=2,
+                 train_split=0.8,
+                 embedding_len=50):
+        tmp_path = "./data/"
+        self.TWITTER_PATH = tmp_path + 'tweets-cikm.txt'
+        self.VENUES_PATH = tmp_path + 'venues_all.txt'
+        self.SAVE_PATH = tmp_path
+        self.save_name = 'foursquare-cikm1'
+
+        self.trace_len_min = trace_min
+        self.location_global_visit_min = global_visit
+        self.hour_gap = hour_gap
+        self.min_gap = min_gap
+        self.session_max = session_max
+        self.filter_short_session = session_min
+        self.sessions_count_min = sessions_min
+
+        self.words_embeddings_len = embedding_len
+
+        self.train_split = train_split
+
+        self.data = {}  # 元数据
+        self.venues = {}  # 地点访问次数字典
+        self.venues_cat = {}  # 地点访问区域所在地点
+
+        self.words_original = []
+        self.words_lens = []
+        self.dictionary = dict()
+        self.words_dict = None
+
+        self.data_filter = {}  # 过滤后的数据
+        self.user_filter3 = None
+        self.uid_list = {}
+        self.vid_list = {'unk': [0, -1]}
+        self.vid_list_cat = {}  # 用户去的区域字典
+        self.vid_list_lookup = {}
+        self.vid_lookup = {}
+        self.pid_loc_lat = {}
+        self.adj_mx = {}
+
+        self.data_neural = {}
+
+    ''' data process'''
+
+    # ############ distance from A to B
+    def getDistance(lng1, lat1, lng2, lat2):
+        lng1, lat1, lng2, lat2 = map(radians, [lng1, lat1, lng2, lat2])
+        dlon = lng2 - lng1
+        dlat = lat2 - lat1
+        a = sin(dlat / 2)**2 + cos(lat1) * cos(lat2) * sin(dlon / 2)**2
+        dis = 2 * asin(sqrt(a)) * 6371 * 1000
+        return dis
+
+    # ############# 1. read trajectory data from twitters
+    def load_trajectory_from_tweets(self):
+        # 读取原生数据
+        with open(self.TWITTER_PATH, encoding='utf-8') as fid:
+            for i, line in enumerate(fid):
+                _, uid, _, _, tim, _, _, tweet, pid = line.strip('\r\n').split(
+                    '')
+                if uid not in self.data:
+                    self.data[uid] = [[pid, tim]]
+                else:
+                    self.data[uid].append([pid, tim])
+                if pid not in self.venues:
+                    self.venues[pid] = 1
+                else:
+                    self.venues[pid] += 1
+
+    # ########### 3.0 basically filter users based on visit length and other
+    # statistics
+    # data_filter={u1:{sessioncount:_,topk_count:_,topk:_,sessions:_,raw_session}
+    # u2:{},....}
+    # user_filter3=[u1,u2,u3,...]
+    def filter_users_by_length(self):
+        uid_3 = [
+            x for x in self.data if len(self.data[x]) > self.trace_len_min
+        ]  # 过滤掉用户轨迹过少的用户，返回在轨迹数目最小值之上的用户id号列表
+        pick3 = sorted([(x, len(self.data[x])) for x in uid_3],
+                       key=lambda x: x[1],
+                       reverse=True)  # 按len(self.data[x])降序排列
+        pid_3 = [
+            x for x in self.venues
+            if self.venues[x] > self.location_global_visit_min
+        ]  # 过滤掉访问地方过少的地方，返回访问地点列表
+        pid_pic3 = sorted([(x, self.venues[x]) for x in pid_3],
+                          key=lambda x: x[1],
+                          reverse=True)  # 按self.venues[x]降序排列
+        pid_3 = dict(pid_pic3)  # pid_3={pid1:pid1_times,pid2:pid2_times,....}
+
+        session_len_list = []
+        for u in pick3:
+            uid = u[0]
+            info = self.data[uid]
+            topk = Counter([x[0] for x in info]).most_common()  # 返回每个地点poi出现次数
+            topk1 = [x[0] for x in topk if x[1] > 1]  # 返回地点出现次数大于1的poi列表
+            sessions = {}
+            # 轨迹开始记录的时间 last_tid
+            last_tid = int(
+                time.mktime(time.strptime(info[0][1], "%Y-%m-%d %H:%M:%S")))
+            for i, record in enumerate(info):
+                poi, tmd = record
+                try:
+                    tid = int(
+                        time.mktime(time.strptime(tmd, "%Y-%m-%d %H:%M:%S")))
+                # time convert to seconds
+                except Exception as e:
+                    print('error:{}'.format(e))
+                    continue
+                # 返回每个用户time-interval为 hour_gap的轨迹(poi,tmd)
+                # sessions={0:[[],[],...],1:[[],[],...],....}
+                sid = len(sessions)
+                if poi not in pid_3 and poi not in topk1:
+                    # if poi not in topk1:
+                    continue
+                if i == 0 or len(sessions) == 0:
+                    sessions[sid] = [record]
+                else:
+                    if (tid - last_tid) / 3600 > self.hour_gap or len(
+                            sessions[sid - 1]) > self.session_max:
+                        sessions[sid] = [record]
+                    elif (tid - last_tid) / 60 > self.min_gap:
+                        sessions[sid - 1].append(record)
+                    else:
+                        pass
+                last_tid = tid
+            # 过滤用户轨迹记录
+            sessions_filter = {}
+            for s in sessions:
+                # 某个时间间隔内轨迹过少的过滤掉
+                if len(sessions[s]) >= self.filter_short_session:
+                    sessions_filter[len(sessions_filter)] = sessions[s]
+                    # 每个时间间隙内轨迹数量
+                    session_len_list.append(len(sessions[s]))
+                # 如果该用户轨迹序列过少也过滤掉
+            if len(sessions_filter) >= self.sessions_count_min:
+                self.data_filter[uid] = {
+                    'sessions_count': len(sessions_filter),
+                    'topk_count': len(topk),
+                    'topk': topk,
+                    'sessions': sessions_filter,
+                    'raw_sessions': sessions
+                }
+
+        # 过滤完之后的用户列表
+        self.user_filter3 = [
+            x for x in self.data_filter
+            if self.data_filter[x]['sessions_count'] >= self.sessions_count_min
+        ]
+
+    # ########### 4. build dictionary for users and location
+    # uid_list={u1:[0,len(u1.sequence)],u2:[1,len(u2.sequence)],....}
+    # vid_list={p1:[0,vis_times],p2:[1,vis_times],....}
+    def build_users_locations_dict(self):
+        for u in self.user_filter3:
+            sessions = self.data_filter[u]['sessions']
+            if u not in self.uid_list:
+                self.uid_list[u] = [len(self.uid_list), len(sessions)]
+            for sid in sessions:
+                poi = [p[0] for p in sessions[sid]]
+                for p in poi:
+                    # vid_list_lookup={0:p1,1:p2,...}
+                    # vid_list={p1:[0,vid_times],p2:[1,vid_times],...}
+                    if p not in self.vid_list:
+                        self.vid_list_lookup[len(self.vid_list)] = p
+                        self.vid_list[p] = [len(self.vid_list), 1]
+                    else:
+                        self.vid_list[p][1] += 1
+
+    # support for radius of gyration
+    # pid_loc_lat={p1:[lon,lat],p2:[lon,lat],....}
+    def load_venues(self):
+        with open(self.TWITTER_PATH, 'r', encoding='utf-8') as fid:
+            for line in fid:
+                _, uid, lon, lat, tim, _, _, tweet, pid = line.strip(
+                    '\r\n').split('')
+                self.pid_loc_lat[pid] = [float(lon), float(lat)]
+
+    # vid_lookup={0:[lon,lat],1:[lon,lat],...} 0,1对应vid_list_lookup的vid
+    def venues_lookup(self):
+        for vid in self.vid_list_lookup:
+            pid = self.vid_list_lookup[vid]
+            lon_lat = self.pid_loc_lat[pid]
+            self.vid_lookup[vid] = lon_lat
+
+    # ########## 5.0 prepare training data for neural network
+    @staticmethod
+    # 返回在当前一周内的小时数1-168
+    def tid_list(tmd):
+        tm = time.strptime(tmd, "%Y-%m-%d %H:%M:%S")
+        tid = tm.tm_wday * 24 + tm.tm_hour
+        return tid
+
+    @staticmethod
+    # working day return hour; weekend day return hour+24
+    def tid_list_48(tmd):
+        tm = time.strptime(tmd, "%Y-%m-%d %H:%M:%S")
+        if tm.tm_wday in [0, 1, 2, 3, 4]:
+            tid = tm.tm_hour
+        else:
+            tid = tm.tm_hour + 24
+        return tid
+
+    def prepare_neural_data(self):
+        for u in self.uid_list:
+            # 轨迹序列：q1,q2,q3 轨迹q1[(l1,t1),(l2,t2),....] q2[(),(),...]
+            # sessions为每个用户的轨迹序列
+            sessions = self.data_filter[u]['sessions']
+            sessions_tran = {}
+            sessions_id = []
+            # sessions_tran={0:[[p1_index,tim1],[p2_index,tim2],...],1:[[]]}
+            for sid in sessions:
+                sessions_tran[sid] = [[
+                    self.vid_list[p[0]][0],
+                    self.tid_list_48(p[1])
+                ] for p in sessions[sid]]
+                sessions_id.append(sid)
+            # user序列分段，train test
+            split_id = int(np.floor(self.train_split * len(sessions_id)))
+            train_id = sessions_id[:split_id]
+            test_id = sessions_id[split_id:]
+            # 训练集每个用户轨迹序列数目的和
+            pred_len = sum([len(sessions_tran[i]) - 1 for i in train_id])
+            valid_len = sum([len(sessions_tran[i]) - 1 for i in test_id])
+            train_loc = {}
+            for i in train_id:
+                for sess in sessions_tran[i]:
+                    # train_loc={poi1_index:visit_times,poi2_index:visit_times,...}
+                    if sess[0] in train_loc:
+                        train_loc[sess[0]] += 1
+                    else:
+                        train_loc[sess[0]] = 1
+            # calculate entropy
+            entropy = entropy_spatial(sessions)
+
+            # calculate location ratio
+            # train——location=[poi1,poi2,poi3,...]
+            train_location = []
+            for i in train_id:
+                train_location.extend([s[0] for s in sessions[i]])
+            train_location_set = set(train_location)  # {poi1,poi2,...}
+            test_location = []
+            for i in test_id:
+                test_location.extend([s[0] for s in sessions[i]])
+            test_location_set = set(test_location)
+            whole_location = train_location_set | test_location_set  # 并集
+            test_unique = whole_location - train_location_set
+            location_ratio = len(test_unique) / len(whole_location)
+
+            # calculate radius of gyration
+            lon_lat = []
+            for pid in train_location:
+                try:
+                    lon_lat.append(self.pid_loc_lat[pid])
+                except IndexError:
+                    print(pid)
+                    print('error')
+            lon_lat = np.array(lon_lat)
+            center = np.mean(lon_lat, axis=0, keepdims=True)  # 取经纬度的平均值并
+            # 复制len(lon_lat)次
+            center = np.repeat(center, axis=0, repeats=len(lon_lat))
+            # 回转半径--物理量
+            rg = np.sqrt(
+                np.mean(
+                    np.sum((lon_lat - center)**2, axis=1, keepdims=True),
+                    axis=0))[0]
+
+            # data_neural={u1_index:{},u2_index:{},....}
+            self.data_neural[self.uid_list[u][0]] = {
+                'sessions': sessions_tran,
+                'train': train_id,
+                'test': test_id,
+                'pred_len': pred_len,
+                'valid_len': valid_len,
+                'train_loc': train_loc,
+                'explore': location_ratio,
+                'entropy': entropy,
+                'rg': rg
+            }
+
+    # ############# 6. save variables
+    def get_parameters(self):
+        parameters = {}
+        parameters['TWITTER_PATH'] = self.TWITTER_PATH
+        parameters['SAVE_PATH'] = self.SAVE_PATH
+
+        parameters['trace_len_min'] = self.trace_len_min
+        parameters[
+            'location_global_visit_min'] = self.location_global_visit_min
+        parameters['hour_gap'] = self.hour_gap
+        parameters['min_gap'] = self.min_gap
+        parameters['session_max'] = self.session_max
+        parameters['filter_short_session'] = self.filter_short_session
+        parameters['sessions_min'] = self.sessions_count_min
+        parameters['train_split'] = self.train_split
+
+        return parameters
+
+    def save_variables(self):
+        foursquare_dataset = {
+            'data_neural': self.data_neural,
+            'vid_list': self.vid_list,
+            'uid_list': self.uid_list,
+            'parameters': self.get_parameters(),
+            'data_filter': self.data_filter,
+            'vid_lookup': self.vid_lookup
+        }
+        pickle.dump(foursquare_dataset,
+                    open(self.SAVE_PATH + self.save_name + '.pk', 'wb'))
+
+
+#  param defination and explanation
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--trace_min',
+        type=int,
+        default=15,
+        help="raw trace length filter threshold")
+    parser.add_argument(
+        '--global_visit',
+        type=int,
+        default=30,
+        help="location global visit threshold")
+    parser.add_argument(
+        '--hour_gap',
+        type=int,
+        default=72,
+        help="maximum interval of two trajectory points")
+    parser.add_argument(
+        '--min_gap',
+        type=int,
+        default=30,
+        help="minimum interval of two trajectory points")
+    parser.add_argument(
+        '--session_max',
+        type=int,
+        default=25,
+        help="control the length of session not too long")
+    parser.add_argument(
+        '--session_min',
+        type=int,
+        default=15,
+        help="control the length of session not too short")
+    parser.add_argument(
+        '--sessions_min',
+        type=int,
+        default=5,
+        help="the minimum amount of the good user's sessions")
+    parser.add_argument(
+        '--train_split', type=float, default=0.8, help="train/test ratio")
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    args = parse_args()
+    data_generator = DataFoursquare(
+        trace_min=args.trace_min,
+        global_visit=args.global_visit,
+        hour_gap=args.hour_gap,
+        min_gap=args.min_gap,
+        session_min=args.session_min,
+        session_max=args.session_max,
+        sessions_min=args.sessions_min,
+        train_split=args.train_split)
+    # data_generator = DataFoursquare()
+    parameters = data_generator.get_parameters()
+    print('############PARAMETER SETTINGS:\n' +
+          '\n'.join([p + ':' + str(parameters[p]) for p in parameters]))
+    print('############START PROCESSING:')
+    print('load trajectory from {}'.format(data_generator.TWITTER_PATH))
+    data_generator.load_trajectory_from_tweets()
+    print('filter users')
+    data_generator.filter_users_by_length()
+    print('build users/locations dictionary')
+    data_generator.build_users_locations_dict()
+    data_generator.load_venues()
+    data_generator.venues_lookup()
+    print('prepare data for neural network')
+    data_generator.prepare_neural_data()
+    print('save prepared data')
+    data_generator.save_variables()
+    print('raw users:{} raw locations:{}'.format(
+        len(data_generator.data), len(data_generator.venues)))
+    print('final users:{} final locations:{}'.format(
+        len(data_generator.data_neural), len(data_generator.vid_list)))
