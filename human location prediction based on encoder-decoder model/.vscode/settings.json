@@ -1,6 +1,6 @@
 {
     "editor.fontSize": 18,
-    "python.pythonPath": "C:\\Anaconda3\\envs\\New_env\\python.exe",
+    "python.pythonPath": "C:\\Anaconda3\\python.exe",
     "python.linting.flake8Enabled": true,
     "python.formatting.provider": "yapf",
     "git.ignoreMissingGitWarning": true,

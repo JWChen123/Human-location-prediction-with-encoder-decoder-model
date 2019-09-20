@@ -1,4 +1,3 @@
-# import argparse
 import torch
 from model import EncoderModel, DecoderModel, DecoderModel1
 from train import generate_input_long_history3, generate_queue, RnnParameterData
@@ -17,6 +16,7 @@ USE_CUDA = True
 reverse = False
 bidirectional = True
 attn_state = False
+mode_reverse = False
 candidate = parameters.data_neural.keys()
 data_train, train_idx = generate_input_long_history3(parameters.data_neural,
                                                      'train', candidate)
@@ -171,8 +171,8 @@ def run_new(data,
                                 criterion(decoder_output, target[di]).item())))
                     ground_target.append(target[di].item())
                     pred_target.append(
-                        decoder_output.data.topk(10)[1].view(-1).cpu().numpy()
-                        [0])
+                        decoder_output.data.topk(10)[1].view(-1).cpu().numpy()[
+                            0])
                 decoder_input = target[di]
 
         if mode == 'train':
@@ -253,10 +253,6 @@ for epoch in range(1, n_epochs):
                                            epoch, epoch / n_epochs * 100, loss)
     metrics['train_loss'].append(loss)
     print(print_summary)
-    # encoder.load_state_dict(
-    #     torch.load("./results/deepmove/" + "ep_16encoder.m"))
-    # decoder1.load_state_dict(
-    #     torch.load("./results/deepmove/" + "ep_16decoder.m"))
     valid_loss, avg_acc, avg_acc_top5, avg_ppl, recall, f1 = run_new(
         data_test, test_idx, 'test', lr, parameters.clip, encoder, decoder1,
         encoder_optimizer, decoder_optimizer1, criterion)
@@ -294,18 +290,19 @@ metrics_view = {
 }
 for key in metrics_view:
     metrics_view[key] = metrics[key]
-json.dump({
-    'metrics': metrics_view,
-    'param': {
-        'hidden_size': parameters.hidden_size,
-        'L2': parameters.L2,
-        'lr': lr,
-        'loc_emb': parameters.loc_emb_size,
-        'dropout': parameters.dropout_p,
-        'clip': parameters.clip,
-        'lr_step': parameters.lr_step,
-        'lr_decay': parameters.lr_decay
-    }
-},
-          fp=open('./results/' + 'Deepmove' + '.txt', 'w'),
-          indent=4)
+json.dump(
+    {
+        'metrics': metrics_view,
+        'param': {
+            'hidden_size': parameters.hidden_size,
+            'L2': parameters.L2,
+            'lr': lr,
+            'loc_emb': parameters.loc_emb_size,
+            'dropout': parameters.dropout_p,
+            'clip': parameters.clip,
+            'lr_step': parameters.lr_step,
+            'lr_decay': parameters.lr_decay
+        }
+    },
+    fp=open('./results/' + 'Deepmove' + '.txt', 'w'),
+    indent=4)

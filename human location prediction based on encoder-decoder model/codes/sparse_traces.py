@@ -9,6 +9,7 @@ from collections import Counter
 from math import radians, cos, sin, asin, sqrt
 
 
+# The trajectory processing method was heavily borrowed from https://github.com/vonfeng/DeepMove.git
 def entropy_spatial(sessions):
     locations = {}
     days = sorted(sessions.keys())
@@ -37,10 +38,10 @@ class DataFoursquare(object):
                  train_split=0.8,
                  embedding_len=50):
         tmp_path = "./data/"
-        self.TWITTER_PATH = tmp_path + 'tweets-cikm.txt'
+        self.TWITTER_PATH = tmp_path + 'tweets.txt'
         self.VENUES_PATH = tmp_path + 'venues_all.txt'
         self.SAVE_PATH = tmp_path
-        self.save_name = 'foursquare-cikm1'
+        self.save_name = 'foursquare'
 
         self.trace_len_min = trace_min
         self.location_global_visit_min = global_visit
@@ -54,20 +55,20 @@ class DataFoursquare(object):
 
         self.train_split = train_split
 
-        self.data = {}  # 元数据
-        self.venues = {}  # 地点访问次数字典
-        self.venues_cat = {}  # 地点访问区域所在地点
+        self.data = {}
+        self.venues = {}
+        self.venues_cat = {}
 
         self.words_original = []
         self.words_lens = []
         self.dictionary = dict()
         self.words_dict = None
 
-        self.data_filter = {}  # 过滤后的数据
+        self.data_filter = {}
         self.user_filter3 = None
         self.uid_list = {}
-        self.vid_list = {'unk': [0, -1]}
-        self.vid_list_cat = {}  # 用户去的区域字典
+        self.vid_list = {'pad_token': [0, -1], 'unk': [1, -1]}
+        self.vid_list_cat = {}
         self.vid_list_lookup = {}
         self.vid_lookup = {}
         self.pid_loc_lat = {}
@@ -78,7 +79,7 @@ class DataFoursquare(object):
     ''' data process'''
 
     # ############ distance from A to B
-    def getDistance(lng1, lat1, lng2, lat2):
+    def getDistance(self, lng1, lat1, lng2, lat2):
         lng1, lat1, lng2, lat2 = map(radians, [lng1, lat1, lng2, lat2])
         dlon = lng2 - lng1
         dlat = lat2 - lat1
@@ -88,7 +89,6 @@ class DataFoursquare(object):
 
     # ############# 1. read trajectory data from twitters
     def load_trajectory_from_tweets(self):
-        # 读取原生数据
         with open(self.TWITTER_PATH, encoding='utf-8') as fid:
             for i, line in enumerate(fid):
                 _, uid, _, _, tim, _, _, tweet, pid = line.strip('\r\n').split(
@@ -110,27 +110,29 @@ class DataFoursquare(object):
     def filter_users_by_length(self):
         uid_3 = [
             x for x in self.data if len(self.data[x]) > self.trace_len_min
-        ]  # 过滤掉用户轨迹过少的用户，返回在轨迹数目最小值之上的用户id号列表
-        pick3 = sorted([(x, len(self.data[x])) for x in uid_3],
-                       key=lambda x: x[1],
-                       reverse=True)  # 按len(self.data[x])降序排列
+        ]
+        pick3 = sorted(
+            [(x, len(self.data[x])) for x in uid_3],
+            key=lambda x: x[1],
+            reverse=True)
         pid_3 = [
             x for x in self.venues
             if self.venues[x] > self.location_global_visit_min
-        ]  # 过滤掉访问地方过少的地方，返回访问地点列表
-        pid_pic3 = sorted([(x, self.venues[x]) for x in pid_3],
-                          key=lambda x: x[1],
-                          reverse=True)  # 按self.venues[x]降序排列
+        ]
+        pid_pic3 = sorted(
+            [(x, self.venues[x]) for x in pid_3],
+            key=lambda x: x[1],
+            reverse=True)
         pid_3 = dict(pid_pic3)  # pid_3={pid1:pid1_times,pid2:pid2_times,....}
 
         session_len_list = []
         for u in pick3:
             uid = u[0]
             info = self.data[uid]
-            topk = Counter([x[0] for x in info]).most_common()  # 返回每个地点poi出现次数
-            topk1 = [x[0] for x in topk if x[1] > 1]  # 返回地点出现次数大于1的poi列表
+            topk = Counter([x[0] for x in info]).most_common()
+            topk1 = [x[0] for x in topk if x[1] > 1]
             sessions = {}
-            # 轨迹开始记录的时间 last_tid
+
             last_tid = int(
                 time.mktime(time.strptime(info[0][1], "%Y-%m-%d %H:%M:%S")))
             for i, record in enumerate(info):
@@ -142,7 +144,7 @@ class DataFoursquare(object):
                 except Exception as e:
                     print('error:{}'.format(e))
                     continue
-                # 返回每个用户time-interval为 hour_gap的轨迹(poi,tmd)
+
                 # sessions={0:[[],[],...],1:[[],[],...],....}
                 sid = len(sessions)
                 if poi not in pid_3 and poi not in topk1:
@@ -159,15 +161,15 @@ class DataFoursquare(object):
                     else:
                         pass
                 last_tid = tid
-            # 过滤用户轨迹记录
+
             sessions_filter = {}
             for s in sessions:
-                # 某个时间间隔内轨迹过少的过滤掉
+
                 if len(sessions[s]) >= self.filter_short_session:
                     sessions_filter[len(sessions_filter)] = sessions[s]
-                    # 每个时间间隙内轨迹数量
+
                     session_len_list.append(len(sessions[s]))
-                # 如果该用户轨迹序列过少也过滤掉
+
             if len(sessions_filter) >= self.sessions_count_min:
                 self.data_filter[uid] = {
                     'sessions_count': len(sessions_filter),
@@ -177,7 +179,6 @@ class DataFoursquare(object):
                     'raw_sessions': sessions
                 }
 
-        # 过滤完之后的用户列表
         self.user_filter3 = [
             x for x in self.data_filter
             if self.data_filter[x]['sessions_count'] >= self.sessions_count_min
@@ -211,7 +212,7 @@ class DataFoursquare(object):
                     '\r\n').split('')
                 self.pid_loc_lat[pid] = [float(lon), float(lat)]
 
-    # vid_lookup={0:[lon,lat],1:[lon,lat],...} 0,1对应vid_list_lookup的vid
+    # vid_lookup={0:[lon,lat],1:[lon,lat],...}
     def venues_lookup(self):
         for vid in self.vid_list_lookup:
             pid = self.vid_list_lookup[vid]
@@ -220,7 +221,6 @@ class DataFoursquare(object):
 
     # ########## 5.0 prepare training data for neural network
     @staticmethod
-    # 返回在当前一周内的小时数1-168
     def tid_list(tmd):
         tm = time.strptime(tmd, "%Y-%m-%d %H:%M:%S")
         tid = tm.tm_wday * 24 + tm.tm_hour
@@ -238,8 +238,6 @@ class DataFoursquare(object):
 
     def prepare_neural_data(self):
         for u in self.uid_list:
-            # 轨迹序列：q1,q2,q3 轨迹q1[(l1,t1),(l2,t2),....] q2[(),(),...]
-            # sessions为每个用户的轨迹序列
             sessions = self.data_filter[u]['sessions']
             sessions_tran = {}
             sessions_id = []
@@ -250,11 +248,10 @@ class DataFoursquare(object):
                     self.tid_list_48(p[1])
                 ] for p in sessions[sid]]
                 sessions_id.append(sid)
-            # user序列分段，train test
             split_id = int(np.floor(self.train_split * len(sessions_id)))
             train_id = sessions_id[:split_id]
             test_id = sessions_id[split_id:]
-            # 训练集每个用户轨迹序列数目的和
+
             pred_len = sum([len(sessions_tran[i]) - 1 for i in train_id])
             valid_len = sum([len(sessions_tran[i]) - 1 for i in test_id])
             train_loc = {}
@@ -278,7 +275,7 @@ class DataFoursquare(object):
             for i in test_id:
                 test_location.extend([s[0] for s in sessions[i]])
             test_location_set = set(test_location)
-            whole_location = train_location_set | test_location_set  # 并集
+            whole_location = train_location_set | test_location_set
             test_unique = whole_location - train_location_set
             location_ratio = len(test_unique) / len(whole_location)
 
@@ -291,10 +288,9 @@ class DataFoursquare(object):
                     print(pid)
                     print('error')
             lon_lat = np.array(lon_lat)
-            center = np.mean(lon_lat, axis=0, keepdims=True)  # 取经纬度的平均值并
-            # 复制len(lon_lat)次
+            center = np.mean(lon_lat, axis=0, keepdims=True)
+
             center = np.repeat(center, axis=0, repeats=len(lon_lat))
-            # 回转半径--物理量
             rg = np.sqrt(
                 np.mean(
                     np.sum((lon_lat - center)**2, axis=1, keepdims=True),

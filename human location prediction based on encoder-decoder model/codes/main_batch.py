@@ -29,13 +29,13 @@ test_pairs = generate_batch_long_history(parameters.data_neural, 'test',
 # history_batches, history_lengths, current_batches, current_lengths, target_batches = random_batch(
 #     3, train_pairs)  # max_len X batch_size
 
-metrics = {
-    'train_loss': [],
-    'valid_loss': [],
-    'ppl': [],
-    'accuracy': [],
-    'accuracy_top5': []
-}
+# metrics = {
+#     'train_loss': [],
+#     'valid_loss': [],
+#     'ppl': [],
+#     'accuracy': [],
+#     'accuracy_top5': []
+# }
 # initial model
 encoder = EncoderModel_batch(parameters)
 decoder = DecoderModel_batch(parameters)

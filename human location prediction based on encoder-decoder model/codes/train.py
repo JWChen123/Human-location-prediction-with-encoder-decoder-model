@@ -9,9 +9,7 @@ import pickle
 import random
 import torch.nn.functional as F
 import scipy.sparse as sp
-from scipy.sparse import linalg
-from collections import deque, Counter
-from sklearn.metrics import recall_score, f1_score, roc_auc_score
+from collections import deque
 
 
 class RnnParameterData(object):
@@ -75,20 +73,6 @@ def calculate_normalized_laplacian(adj):
     return normalized_laplacian
 
 
-def calculate_scaled_laplacian(adj_mx, lambda_max=2, undirected=True):
-    if undirected:
-        adj_mx = np.maximum.reduce([adj_mx, adj_mx.T])
-    L = calculate_normalized_laplacian(adj_mx)
-    if lambda_max is None:
-        lambda_max, _ = linalg.eigsh(L, 1, which='LM')
-        lambda_max = lambda_max[0]
-    L = sp.csr_matrix(L)
-    M, _ = L.shape
-    I = sp.identity(M, format='csr', dtype=L.dtype)
-    L = (2 / lambda_max * L) - I
-    return L.astype(np.float32)
-
-
 def calculate_random_walk_matrix(adj_mx):
     adj_mx = sp.coo_matrix(adj_mx)
     d = np.array(adj_mx.sum(1))
@@ -99,6 +83,7 @@ def calculate_random_walk_matrix(adj_mx):
     return random_walk_mx
 
 
+# Heavily borrowed from https://github.com/spro/practical-pytorch.git
 def sequence_mask(sequence_length, max_len=None):
     if max_len is None:
         max_len = sequence_length.data.max()
@@ -187,6 +172,7 @@ def generate_input_long_history3(data_neural, mode, candidate=None):
     return data_train, train_idx
 
 
+# batch_preparation
 def generate_batch_long_history(data_neural, mode, candidate=None):
     pairs = []
     if candidate is None:
@@ -227,6 +213,7 @@ def pad_seq(seq, max_length):
     return seq
 
 
+# batch_test
 def random_batch(batch_size, pairs):
     history_seqs = []
     current_seqs = []
@@ -252,6 +239,7 @@ def random_batch(batch_size, pairs):
     return encoder_input, history_lengths, decoder_input, current_lengths, target_batches
 
 
+# batch_trajectory_generator
 def batch_generator(batch_size, pairs, shuffle=True):
     train_queue = deque()
     initial_queue = deque()
@@ -333,7 +321,6 @@ def generate_queue(train_idx, mode, mode2):
         queue_left = 1
         list_user = list(user)
         while queue_left > 0:
-            # 打乱用户数据
             np.random.shuffle(list_user)
             for j, u in enumerate(list_user):
                 if len(initial_queue[u]) > 0:
@@ -371,7 +358,6 @@ def generate_queue2(train_idx, mode, mode2):
         tmp_user = np.arange(len(user), len(user) * 2)
         list_user.extend(tmp_user)
         while queue_left > 0:
-            # 打乱用户数据
             np.random.shuffle(list_user)
             for j, u in enumerate(list_user):
                 if len(initial_queue[u]) > 0:
